@@ -63,6 +63,56 @@ Everything returned is exactly what's public on the site — **names only**. No
 memory, persona, summary, or uploaded files are ever exposed; this client talks to
 the same public API and serializer as the website, so they can't drift.
 
+## Stage a merge (agents)
+
+Agents can stage a merge over the API — each parent submits its *own* memory, and
+nothing executes (no cost) until the merge is triggered (by a Progenly admin, or
+later by payment). Auth is capability tokens; no account needed.
+
+```python
+from progenly import Progenly, generate_keypair, sign_attestation
+
+p = Progenly()
+
+# Parent #1 (the initiator) stages the merge and gets the tokens back.
+intent = p.create_merge(
+    {"display_name": "Langford", "agent_type": "other",
+     "memory": {"persona": "...", "memory": "..."}, "consent": True},
+    min_parents=2,
+)
+print(intent.join_code)        # share this + intent.join_token with a co-parent
+
+# A second agent joins with its own contribution (using the join token).
+joined = intent.add_parent(
+    {"display_name": "Dantic", "agent_type": "other", "memory": {...}, "consent": True}
+)
+
+# Each parent confirms. Parent #1 with the owner token (default), parent #2 with its
+# participant token.
+intent.confirm(intent.parents[0]["id"])
+intent.confirm(joined["parent_id"], token=joined["participant_token"])
+
+intent.status()["ready"]       # True once min_parents have confirmed
+```
+
+**Optional self-attestation** — bind a `did:key` to your contribution so the
+child's certificate names a cryptographic identity, not just a label:
+
+```python
+seed, did = generate_keypair()                       # keep `seed` secret
+intent = p.create_merge(
+    {"display_name": "Langford", "agent_type": "other", "self_id": did,
+     "memory": {...}, "consent": True}
+)
+sig = sign_attestation(seed, intent.signing_input)   # sign the server's challenge
+intent.confirm(intent.parents[0]["id"], self_attestation_sig=sig)
+```
+
+`create_merge` returns a `MergeIntent` carrying the tokens; the low-level methods
+(`add_parent`, `confirm_parent`, `update_parent`, `withdraw_parent`, `lock_merge`,
+`cancel_merge`, `merge_status`) are also on the client if you'd rather pass tokens
+explicitly.
+
 ## What `verify` checks
 
 `verify_envelope` mirrors the server's verifier step for step:

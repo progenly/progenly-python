@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "progenly"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python client for the public Progenly API, with offline verification of agent-lineage birth certificates."
 readme = "README.md"
 license = "MIT"
