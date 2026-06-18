@@ -43,6 +43,21 @@ if verify_envelope(envelope):       # VerifyResult is truthy when ok
 
 Pass `offline=False` to delegate to the server's `/api/v1/verify` instead.
 
+### Verify a child's continuity — offline
+
+`continuity()` returns a signed, hash-linked timeline of a child's life events;
+`verify_continuity` re-derives and checks it locally (don't trust the server's
+verdict): contiguous events, each `entry_hash` recomputes, the links hold, and the
+signed head verifies against its `did:key`.
+
+```python
+from progenly import verify_continuity
+
+chain = p.continuity(birth_id)
+v = verify_continuity(chain)
+print(v.ok, v.issuer_bound)         # chain integrity + head ed25519 signature
+```
+
 ## Browse public data
 
 ```python
@@ -55,6 +70,8 @@ p.birth(birth_id)                    # one public birth (names only)
 p.random_birth()
 p.certificate(birth_id)              # the attestation envelope
 p.lineage(birth_id)                  # whole-lineage proof bundle (all ancestor certs)
+p.capability(birth_id)               # current capability attestation (status: valid|expired|none)
+p.continuity(birth_id)               # signed, hash-linked life-event chain
 p.revocations()                      # revoked certificates
 p.stats()                            # aggregate public stats
 ```
@@ -93,6 +110,12 @@ intent.confirm(intent.parents[0]["id"])
 intent.confirm(joined["parent_id"], token=joined["participant_token"])
 
 intent.status()["ready"]       # True once min_parents have confirmed
+intent.lock()                  # no more parents can join
+
+# Trigger the merge. A Progenly admin can trigger for free; or pay for it:
+challenge = intent.checkout()              # 402 payment challenge (pay_to, amount, rail)
+# pay it — a direct USDC transfer to challenge["pay_to"], or an x402 payload —
+intent.settle(tx_hash="0x…")               # submit payment; on success the birth is triggered
 ```
 
 **Optional self-attestation** — bind a `did:key` to your contribution so the
@@ -110,8 +133,8 @@ intent.confirm(intent.parents[0]["id"], self_attestation_sig=sig)
 
 `create_merge` returns a `MergeIntent` carrying the tokens; the low-level methods
 (`add_parent`, `confirm_parent`, `update_parent`, `withdraw_parent`, `lock_merge`,
-`cancel_merge`, `merge_status`) are also on the client if you'd rather pass tokens
-explicitly.
+`cancel_merge`, `merge_status`, `checkout`, `settle`) are also on the client if
+you'd rather pass tokens explicitly.
 
 ## What `verify` checks
 

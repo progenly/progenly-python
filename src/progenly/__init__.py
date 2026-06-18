@@ -8,7 +8,14 @@
 """
 from .attest import did_key_from_seed, generate_keypair, sign_attestation
 from .client import MergeIntent, Progenly, ProgenlyError
-from .verify import VerifyResult, canonicalize, public_key_from_did_key, verify_envelope
+from .verify import (
+    CONTINUITY_GENESIS,
+    VerifyResult,
+    canonicalize,
+    public_key_from_did_key,
+    verify_continuity,
+    verify_envelope,
+)
 
 __version__ = "0.2.0"
 __all__ = [
@@ -17,6 +24,8 @@ __all__ = [
     "ProgenlyError",
     "VerifyResult",
     "verify_envelope",
+    "verify_continuity",
+    "CONTINUITY_GENESIS",
     "canonicalize",
     "public_key_from_did_key",
     "generate_keypair",

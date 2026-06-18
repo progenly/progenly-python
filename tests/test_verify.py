@@ -143,3 +143,130 @@ def test_canonicalize_is_stable_under_reorder(cert):
     reordered = dict(reversed(list(cert.items())))
     assert canonicalize(cert) == canonicalize(reordered)
     assert verify_envelope(copy.deepcopy(reordered)).ok is True
+
+
+# ---- continuity-of-subject chain (offline) ----------------------------------
+
+_CONT = pathlib.Path(__file__).parent / "fixtures" / "continuity.json"
+
+
+@pytest.fixture
+def continuity():
+    return json.loads(_CONT.read_text())
+
+
+def test_verify_continuity_valid(continuity):
+    from progenly import verify_continuity
+
+    r = verify_continuity(continuity)
+    assert r.ok is True
+    assert r.issuer_bound is True  # head ed25519 sig verifies against its did:key
+    assert r.reasons == []
+
+
+def test_verify_continuity_tampered_ref_hash(continuity):
+    from progenly import verify_continuity
+
+    continuity["events"][0]["ref_hash"] = "sha256:" + "f" * 64
+    r = verify_continuity(continuity)
+    assert r.ok is False
+    assert any("entry_hash mismatch" in x for x in r.reasons)
+
+
+def test_verify_continuity_broken_link(continuity):
+    from progenly import verify_continuity
+
+    continuity["events"][0]["prev_hash"] = "sha256:" + "a" * 64  # not genesis
+    r = verify_continuity(continuity)
+    assert r.ok is False
+    assert any("prev_hash does not link" in x for x in r.reasons)
+
+
+def test_verify_continuity_bad_signature(continuity):
+    from progenly import verify_continuity
+
+    # chain stays intact; only the head signature is corrupted
+    continuity["head"]["signature"] = "A" * 86
+    r = verify_continuity(continuity)
+    assert r.ok is False
+    assert r.issuer_bound is False
+    assert any("signature does not verify" in x for x in r.reasons)
+
+
+def test_verify_continuity_rejects_non_dict():
+    from progenly import verify_continuity
+
+    assert verify_continuity("nope").ok is False
+    assert verify_continuity({"events": "not-a-list"}).ok is False
+
+
+def test_verify_continuity_non_dict_event():
+    from progenly import verify_continuity
+
+    r = verify_continuity({"events": ["not-an-object"], "head": {}})
+    assert r.ok is False
+    assert any("not an object" in x for x in r.reasons)
+
+
+def test_verify_continuity_seq_gap():
+    from progenly import CONTINUITY_GENESIS, verify_continuity
+
+    r = verify_continuity({"events": [{"seq": 1, "prev_hash": CONTINUITY_GENESIS}], "head": {}})
+    assert r.ok is False
+    assert any("non-contiguous seq" in x for x in r.reasons)
+
+
+def test_verify_continuity_missing_field():
+    from progenly import CONTINUITY_GENESIS, verify_continuity
+
+    # seq + prev_hash link, but the event is missing fields the entry_hash needs
+    r = verify_continuity({"events": [{"seq": 0, "prev_hash": CONTINUITY_GENESIS}], "head": {}})
+    assert r.ok is False
+    assert any("missing field" in x for x in r.reasons)
+
+
+def test_verify_continuity_head_missing(continuity):
+    from progenly import verify_continuity
+
+    continuity["head"] = None
+    r = verify_continuity(continuity)
+    assert r.ok is False
+    assert any("head is missing" in x for x in r.reasons)
+
+
+def test_verify_continuity_head_entry_mismatch(continuity):
+    from progenly import verify_continuity
+
+    continuity["head"]["entry_hash"] = "sha256:" + "0" * 64
+    r = verify_continuity(continuity)
+    assert r.ok is False
+    assert any("does not match the last event" in x for x in r.reasons)
+
+
+def test_verify_continuity_bad_alg(continuity):
+    from progenly import verify_continuity
+
+    continuity["head"]["alg"] = "rsa"
+    r = verify_continuity(continuity)
+    assert r.ok is False
+    assert any("alg unsupported" in x for x in r.reasons)
+
+
+def test_verify_continuity_empty_chain_valid_head():
+    from progenly import CONTINUITY_GENESIS, generate_keypair, sign_attestation, verify_continuity
+
+    seed, did = generate_keypair()
+    data = {
+        "subject": "newborn",
+        "events": [],
+        "head": {
+            "entry_hash": CONTINUITY_GENESIS,
+            "signature": sign_attestation(seed, CONTINUITY_GENESIS),
+            "issuer": did,
+            "alg": "ed25519",
+        },
+    }
+    r = verify_continuity(data)
+    assert r.ok is True
+    assert r.issuer_bound is True
+    assert any("empty chain" in x for x in r.notes)
