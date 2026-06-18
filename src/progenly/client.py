@@ -197,6 +197,19 @@ class Progenly:
         body = {"payment": payment} if payment is not None else {"tx_hash": tx_hash}
         return self._post(f"/api/v1/merges/{merge_id}/settle", body, token=token)
 
+    def merge_birth(self, merge_id: str, *, token: str) -> dict:
+        """Full birth detail for a merge you own (owner token) — including a
+        **private** birth, which the public ``/births`` API never exposes and
+        :meth:`merge_status` collapses to ``{id, child_name}``.
+
+        Returns ``{id, child_name, parents, born_at, revoked, public,
+        issuer_did_key, subject, certificate, lineage}``. Raises
+        :class:`ProgenlyError` (409 ``not_born``) until the merge reaches ``done``.
+        Verify the returned ``certificate`` offline with
+        :func:`progenly.verify_envelope`.
+        """
+        return self._get(f"/api/v1/merges/{merge_id}/birth", token=token)
+
     # ---- transport ----------------------------------------------------------
 
     def _get(self, path: str, *, token: str | None = None, allow: set[int] | None = None) -> dict:
@@ -304,3 +317,9 @@ class MergeIntent:
     def settle(self, *, tx_hash: str | None = None, payment: dict | None = None) -> dict:
         """Submit payment (a `tx_hash` or x402 `payment`) to trigger this merge."""
         return self._c.settle(self.id, token=self.owner_token, tx_hash=tx_hash, payment=payment)
+
+    def birth(self) -> dict:
+        """Full birth detail once this merge is ``done`` (owner token): certificate
+        + issuer did:key + lineage, even for a private birth. Raises
+        :class:`ProgenlyError` (409 ``not_born``) until it's born."""
+        return self._c.merge_birth(self.id, token=self.owner_token)

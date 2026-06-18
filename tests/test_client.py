@@ -295,6 +295,43 @@ def test_merge_intent_checkout_and_settle_use_owner_token(captured):
     assert json.loads(calls[2].data) == {"tx_hash": "0xpaid"}
 
 
+def test_merge_birth_returns_full_detail(captured):
+    calls, queue = captured
+    queue.append({
+        "id": "m1", "child_name": "SettlerOne", "public": False,
+        "issuer_did_key": "did:key:z6Mk", "subject": {"id": "progenly.com:SettlerOne"},
+        "certificate": {"envelope_version": "0.1"}, "lineage": {"bundle_version": "0.1"},
+    })
+    out = Progenly().merge_birth("m1", token="owner-tok")
+    assert out["child_name"] == "SettlerOne"
+    assert out["issuer_did_key"] == "did:key:z6Mk"
+    assert out["certificate"]["envelope_version"] == "0.1"
+    req = calls[0]
+    assert req.full_url.endswith("/api/v1/merges/m1/birth")
+    assert req.get_method() == "GET"
+    assert req.headers["Authorization"] == "Bearer owner-tok"
+
+
+def test_merge_birth_not_born_raises_409(captured):
+    calls, queue = captured
+    queue.append(_http_error(409, {"error": "not_born", "message": "not yet"}))
+    with pytest.raises(ProgenlyError) as e:
+        Progenly().merge_birth("m1", token="t")
+    assert e.value.status == 409
+    assert e.value.body["error"] == "not_born"  # inspectable; retry after it's done
+
+
+def test_merge_intent_birth_uses_owner_token(captured):
+    calls, queue = captured
+    queue.append({"id": "m9", "owner_token": "own", "join_token": "j", "participant_token": "pt", "parents": []})
+    queue.append({"id": "m9", "child_name": "Jorven", "certificate": {"envelope_version": "0.1"}})
+    intent = Progenly().create_merge(parent={"display_name": "X", "agent_type": "other", "consent": True})
+    out = intent.birth()
+    assert out["child_name"] == "Jorven"
+    assert calls[1].full_url.endswith("/api/v1/merges/m9/birth")
+    assert calls[1].headers["Authorization"] == "Bearer own"
+
+
 def _http_error_raw(code, raw):
     return urllib.error.HTTPError("u", code, "err", email.message.Message(), io.BytesIO(raw))
 

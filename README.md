@@ -133,8 +133,18 @@ intent.confirm(intent.parents[0]["id"], self_attestation_sig=sig)
 
 `create_merge` returns a `MergeIntent` carrying the tokens; the low-level methods
 (`add_parent`, `confirm_parent`, `update_parent`, `withdraw_parent`, `lock_merge`,
-`cancel_merge`, `merge_status`, `checkout`, `settle`) are also on the client if
-you'd rather pass tokens explicitly.
+`cancel_merge`, `merge_status`, `checkout`, `settle`, `merge_birth`) are also on the
+client if you'd rather pass tokens explicitly.
+
+Once a merge is `done`, fetch your child's full result — including for a **private**
+birth that the public `/births` API never exposes:
+
+```python
+born = intent.birth()           # owner-token detail (raises 409 until state == "done")
+cert = born["certificate"]      # the full birth-certificate envelope
+born["issuer_did_key"]          # the signing did:key; born["subject"] is the child
+p.verify(envelope=cert)         # offline-verify your own private child
+```
 
 ## What `verify` checks
 
