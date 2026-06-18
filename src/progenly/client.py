@@ -237,8 +237,8 @@ class Progenly:
         except urllib.error.HTTPError as e:
             try:
                 parsed = json.loads(e.read() or b"{}")
-            except (AttributeError, OSError, ValueError, TypeError):
-                parsed = {}  # no body, body unreadable, or not JSON
+            except (AttributeError, OSError, ValueError, TypeError, KeyError):
+                parsed = {}  # no body, body unreadable (fp=None: KeyError on 3.9), or not JSON
             if not isinstance(parsed, dict):
                 parsed = {}  # JSON, but not an object
             if allow and e.code in allow:
