@@ -10,9 +10,12 @@ from .verify import VerifyResult, verify_envelope
 
 
 class ProgenlyError(RuntimeError):
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, body: dict | None = None):
         super().__init__(message)
         self.status = status
+        # Parsed JSON error body when present (e.g. {"error": ..., "message": ...}),
+        # so callers can inspect a declined settle: ``err.body.get("error")``.
+        self.body = body or {}
 
 
 class Progenly:
@@ -52,6 +55,25 @@ class Progenly:
 
     def lineage(self, birth_id: str) -> dict:
         return self._get(f"/api/v1/births/{birth_id}/lineage")
+
+    def capability(self, birth_id: str) -> dict:
+        """The child's current capability attestation, if any.
+
+        Returns ``{"birth_id", "status": "valid"|"expired"|"none", "attestation": …}``.
+        A separate, expiring receipt distinct from the (perpetual) birth certificate;
+        ``status == "none"`` when the child has no capability attestation yet.
+        """
+        return self._get(f"/api/v1/births/{birth_id}/capability")
+
+    def continuity(self, birth_id: str) -> dict:
+        """The child's continuity-of-subject chain: a signed, hash-linked timeline
+        of its life events (born → re-attested → revoked …) with a signed head.
+
+        Returns the chain plus the server's integrity verdict. Verify it yourself
+        offline with :func:`progenly.verify_continuity` — don't trust the server's
+        ``continuity.ok``.
+        """
+        return self._get(f"/api/v1/births/{birth_id}/continuity")
 
     def revocations(self) -> dict:
         return self._get("/api/v1/revocations")
@@ -142,16 +164,66 @@ class Progenly:
         """Status of a staging intent (any token for this intent)."""
         return self._get(f"/api/v1/merges/{merge_id}", token=token)
 
+    def checkout(self, merge_id: str, *, token: str, rail: str = "usdc-base") -> dict:
+        """Request payment to trigger a locked merge (owner token) — the paid
+        alternative to an admin trigger.
+
+        Returns the **402 payment challenge** (e.g. ``pay_to``, amount, asset) as a
+        dict; pay it, then call :meth:`settle`. ``rail`` is ``"usdc-base"`` or
+        ``"lightning"``. Raises :class:`ProgenlyError` (503) if paid triggering
+        isn't configured server-side (a Progenly admin can trigger for free).
+        """
+        return self._post(f"/api/v1/merges/{merge_id}/checkout", {"rail": rail}, token=token, allow={402})
+
+    def settle(
+        self,
+        merge_id: str,
+        *,
+        token: str,
+        tx_hash: str | None = None,
+        payment: dict | None = None,
+    ) -> dict:
+        """Submit payment for a checked-out merge (owner token); on success the
+        merge is triggered.
+
+        Provide exactly one of: ``tx_hash`` (a direct on-chain USDC transfer to the
+        challenge's ``pay_to``) or an x402 ``payment`` payload. A still-unconfirmed
+        or expired payment raises :class:`ProgenlyError` with ``status == 402`` and
+        ``body["error"]`` in ``{"payment_unconfirmed", "quote_expired"}`` — safe to
+        retry after the transfer confirms.
+        """
+        if (tx_hash is None) == (payment is None):
+            raise ValueError("provide exactly one of `tx_hash` or `payment`")
+        body = {"payment": payment} if payment is not None else {"tx_hash": tx_hash}
+        return self._post(f"/api/v1/merges/{merge_id}/settle", body, token=token)
+
     # ---- transport ----------------------------------------------------------
 
-    def _get(self, path: str, *, token: str | None = None) -> dict:
-        return self._request("GET", path, token=token)
+    def _get(self, path: str, *, token: str | None = None, allow: set[int] | None = None) -> dict:
+        return self._request("GET", path, token=token, allow=allow)
 
-    def _post(self, path: str, body: dict | None, *, token: str | None = None) -> dict:
+    def _post(
+        self,
+        path: str,
+        body: dict | None,
+        *,
+        token: str | None = None,
+        allow: set[int] | None = None,
+    ) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        return self._request("POST", path, data, token=token)
+        return self._request("POST", path, data, token=token, allow=allow)
 
-    def _request(self, method: str, path: str, data: bytes | None = None, *, token: str | None = None) -> dict:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        data: bytes | None = None,
+        *,
+        token: str | None = None,
+        allow: set[int] | None = None,
+    ) -> dict:
+        """``allow`` lists non-2xx statuses to return (parsed) instead of raising —
+        e.g. ``checkout`` expects a 402 carrying the payment challenge."""
         req = urllib.request.Request(self.base_url + path, data=data, method=method)
         req.add_header("Accept", "application/json")
         req.add_header("User-Agent", "progenly-python")
@@ -163,7 +235,15 @@ class Progenly:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
-            raise ProgenlyError(f"HTTP {e.code} for {path}", status=e.code) from e
+            try:
+                parsed = json.loads(e.read() or b"{}")
+            except (AttributeError, OSError, ValueError, TypeError):
+                parsed = {}  # no body, body unreadable, or not JSON
+            if not isinstance(parsed, dict):
+                parsed = {}  # JSON, but not an object
+            if allow and e.code in allow:
+                return parsed
+            raise ProgenlyError(f"HTTP {e.code} for {path}", status=e.code, body=parsed) from e
         except urllib.error.URLError as e:
             raise ProgenlyError(f"request failed: {e}") from e
 
@@ -216,3 +296,11 @@ class MergeIntent:
 
     def status(self, *, token: str | None = None) -> dict:
         return self._c.merge_status(self.id, token=token or self.owner_token)
+
+    def checkout(self, *, rail: str = "usdc-base") -> dict:
+        """Request the payment challenge to trigger this locked merge (owner token)."""
+        return self._c.checkout(self.id, token=self.owner_token, rail=rail)
+
+    def settle(self, *, tx_hash: str | None = None, payment: dict | None = None) -> dict:
+        """Submit payment (a `tx_hash` or x402 `payment`) to trigger this merge."""
+        return self._c.settle(self.id, token=self.owner_token, tx_hash=tx_hash, payment=payment)

@@ -1,0 +1,26 @@
+{
+  "subject": "Embervane",
+  "continuity": {
+    "ok": true,
+    "length": 1,
+    "broken_at": null,
+    "reason": null
+  },
+  "events": [
+    {
+      "seq": 0,
+      "type": "born",
+      "occurred_at": "2026-06-18T08:02:24Z",
+      "ref_hash": "sha256:8981655cd661035045d7b3474faea87103e206a20a18425e7817ac4aa6814327",
+      "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "entry_hash": "sha256:d426393deaa3cb5861143f50fa449007f55b9b52a7d004aadfdeb3a7a6e3a7c5"
+    }
+  ],
+  "head": {
+    "entry_hash": "sha256:d426393deaa3cb5861143f50fa449007f55b9b52a7d004aadfdeb3a7a6e3a7c5",
+    "signature": "XBSLHi2uDLIFa-lCW1MgcFibKvOBH3EdK66NXPO-uWBIkPYjaGyGe1RwvyWSK2XPM92OoK-SbnRARxLnbFoTAw",
+    "issuer": "did:key:z6Mkpkw4FYqSLpL1ZiBYAYVgrKND61rBEmtNbdtxd4MzmUVd",
+    "alg": "ed25519"
+  },
+  "note": "Verify offline: recompute each entry_hash from sha256(JCS{occurred_at,prev_hash,ref_hash,seq,type}); check prev_hash links and seq is contiguous; verify head.signature over head.entry_hash against head.issuer. A gap or broken link is a possible discontinuity of subject."
+}

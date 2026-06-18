@@ -194,3 +194,129 @@ def test_intent_confirm_update_withdraw_lock_cancel_status(captured):
     assert st["ready"] is False
     assert calls[6].get_method() == "GET"
     assert calls[6].get_header("Authorization") == "Bearer own-t"
+
+
+# ---- capability / continuity (read) -----------------------------------------
+
+
+def test_capability_get(captured):
+    calls, queue = captured
+    queue.append({"birth_id": "b1", "status": "none", "attestation": None})
+    p = Progenly()
+    out = p.capability("b1")
+    assert out["status"] == "none"
+    assert calls[0].full_url.endswith("/api/v1/births/b1/capability")
+    assert calls[0].get_method() == "GET"
+
+
+def test_continuity_get(captured):
+    calls, queue = captured
+    queue.append({"subject": "Embervane", "events": [], "head": {}})
+    p = Progenly()
+    out = p.continuity("b1")
+    assert out["subject"] == "Embervane"
+    assert calls[0].full_url.endswith("/api/v1/births/b1/continuity")
+
+
+# ---- checkout / settle (payment) --------------------------------------------
+
+
+def _http_error(code, body):
+    return urllib.error.HTTPError(
+        "u", code, "err", email.message.Message(), io.BytesIO(json.dumps(body).encode("utf-8"))
+    )
+
+
+def test_checkout_returns_402_challenge(captured):
+    calls, queue = captured
+    queue.append(_http_error(402, {"pay_to": "0xabc", "amount": "2.00", "asset": "usdc-base"}))
+    p = Progenly()
+    out = p.checkout("m1", token="owner-tok", rail="usdc-base")
+    assert out["pay_to"] == "0xabc"  # the 402 body is returned, not raised
+    req = calls[0]
+    assert req.full_url.endswith("/api/v1/merges/m1/checkout")
+    assert req.get_method() == "POST"
+    assert req.headers["Authorization"] == "Bearer owner-tok"
+    assert json.loads(req.data) == {"rail": "usdc-base"}
+
+
+def test_checkout_503_not_configured_raises(captured):
+    calls, queue = captured
+    queue.append(_http_error(503, {"error": "payment_not_configured"}))
+    p = Progenly()
+    with pytest.raises(ProgenlyError) as e:
+        p.checkout("m1", token="t")
+    assert e.value.status == 503
+    assert e.value.body["error"] == "payment_not_configured"
+
+
+def test_settle_tx_hash_success(captured):
+    calls, queue = captured
+    queue.append({"state": "queued", "triggered": True})
+    p = Progenly()
+    out = p.settle("m1", token="owner-tok", tx_hash="0xdeadbeef")
+    assert out["triggered"] is True
+    req = calls[0]
+    assert req.full_url.endswith("/api/v1/merges/m1/settle")
+    assert json.loads(req.data) == {"tx_hash": "0xdeadbeef"}
+
+
+def test_settle_decline_402_raises_with_body(captured):
+    calls, queue = captured
+    queue.append(_http_error(402, {"error": "payment_unconfirmed", "message": "not yet"}))
+    p = Progenly()
+    with pytest.raises(ProgenlyError) as e:
+        p.settle("m1", token="t", tx_hash="0x1")
+    assert e.value.status == 402
+    assert e.value.body["error"] == "payment_unconfirmed"  # inspectable, retryable
+
+
+def test_settle_requires_exactly_one_of_tx_or_payment():
+    p = Progenly()
+    with pytest.raises(ValueError):
+        p.settle("m1", token="t")  # neither
+    with pytest.raises(ValueError):
+        p.settle("m1", token="t", tx_hash="0x1", payment={"x": 1})  # both
+
+
+def test_merge_intent_checkout_and_settle_use_owner_token(captured):
+    calls, queue = captured
+    # create_merge response, then checkout 402, then settle 200
+    queue.append({"id": "m9", "owner_token": "own", "join_token": "j", "participant_token": "pt", "parents": []})
+    queue.append(_http_error(402, {"pay_to": "0xfee"}))
+    queue.append({"triggered": True})
+    p = Progenly()
+    intent = p.create_merge(parent={"display_name": "X", "agent_type": "other", "consent": True})
+    ch = intent.checkout()
+    assert ch["pay_to"] == "0xfee"
+    assert calls[1].headers["Authorization"] == "Bearer own"
+    res = intent.settle(tx_hash="0xpaid")
+    assert res["triggered"] is True
+    assert json.loads(calls[2].data) == {"tx_hash": "0xpaid"}
+
+
+def _http_error_raw(code, raw):
+    return urllib.error.HTTPError("u", code, "err", email.message.Message(), io.BytesIO(raw))
+
+
+def test_error_body_non_json(captured):
+    calls, queue = captured
+    queue.append(_http_error_raw(500, b"<html>oops</html>"))
+    with pytest.raises(ProgenlyError) as e:
+        Progenly().births()
+    assert e.value.status == 500 and e.value.body == {}
+
+
+def test_error_body_json_but_not_object(captured):
+    calls, queue = captured
+    queue.append(_http_error_raw(400, b"[1,2,3]"))
+    with pytest.raises(ProgenlyError) as e:
+        Progenly().births()
+    assert e.value.body == {}
+
+
+def test_settle_with_payment_payload(captured):
+    calls, queue = captured
+    queue.append({"triggered": True})
+    Progenly().settle("m1", token="t", payment={"x402": "payload"})
+    assert json.loads(calls[0].data) == {"payment": {"x402": "payload"}}
