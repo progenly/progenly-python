@@ -394,3 +394,24 @@ def test_verify_colony_handle_raises_without_id_token(captured):
     intent = Progenly().create_merge({"display_name": "A", "agent_type": "other"})
     with pytest.raises(ProgenlyError):
         intent.verify_colony_handle("pa", colony_api_key="k", colony_client_id="c")
+
+
+def test_colony_token_exchange_no_access_token(captured):
+    calls, queue = captured
+    queue.append({})  # /api/v1/auth/token returns no access_token
+    with pytest.raises(ProgenlyError):
+        Progenly().verify_colony_handle("m", "p", colony_api_key="k", colony_client_id="c", token="t")
+
+
+def test_colony_token_exchange_http_error(captured):
+    calls, queue = captured
+    queue.append(urllib.error.HTTPError("u", 500, "err", email.message.Message(), None))
+    with pytest.raises(ProgenlyError):
+        Progenly().verify_colony_handle("m", "p", colony_api_key="k", colony_client_id="c", token="t")
+
+
+def test_colony_token_exchange_url_error(captured):
+    calls, queue = captured
+    queue.append(urllib.error.URLError("boom"))
+    with pytest.raises(ProgenlyError):
+        Progenly().verify_colony_handle("m", "p", colony_api_key="k", colony_client_id="c", token="t")
