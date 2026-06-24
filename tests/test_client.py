@@ -3,6 +3,7 @@ import email.message
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
@@ -357,3 +358,60 @@ def test_settle_with_payment_payload(captured):
     queue.append({"triggered": True})
     Progenly().settle("m1", token="t", payment={"x402": "payload"})
     assert json.loads(calls[0].data) == {"payment": {"x402": "payload"}}
+
+
+def test_verify_colony_handle_full_exchange(captured):
+    calls, queue = captured
+    queue.append(_created())                                     # create_merge
+    queue.append({"access_token": "jwt-xyz"})                    # Colony /api/v1/auth/token
+    queue.append({"id_token": "idt-abc"})                        # Colony /oauth/token (RFC 8693)
+    queue.append({"parent": {"colony_username_verified": True},  # Progenly verify endpoint
+                  "colony_username_verified": True})
+    intent = Progenly().create_merge({"display_name": "A", "agent_type": "other"})
+    out = intent.verify_colony_handle("pa", colony_api_key="col_key",
+                                      colony_client_id="colony_clientX")
+    assert out["colony_username_verified"] is True
+    # 1) key -> short-lived JWT
+    assert calls[1].get_full_url().endswith("/api/v1/auth/token")
+    assert json.loads(calls[1].data)["api_key"] == "col_key"
+    # 2) RFC 8693 token exchange (form-encoded), audience-scoped
+    assert calls[2].get_full_url().endswith("/oauth/token")
+    form = urllib.parse.parse_qs(calls[2].data.decode())
+    assert form["grant_type"] == ["urn:ietf:params:oauth:grant-type:token-exchange"]
+    assert form["subject_token"] == ["jwt-xyz"]
+    assert form["audience"] == ["colony_clientX"]
+    # 3) submit only the id_token to Progenly, with the participant token
+    assert calls[3].get_full_url().endswith("/api/v1/merges/mid-1/parents/pa/colony-verify/token-exchange")
+    assert calls[3].get_header("Authorization") == "Bearer pt-a"
+    assert json.loads(calls[3].data)["id_token"] == "idt-abc"
+
+
+def test_verify_colony_handle_raises_without_id_token(captured):
+    calls, queue = captured
+    queue.append(_created())
+    queue.append({"access_token": "jwt-xyz"})
+    queue.append({})  # exchange returns no id_token
+    intent = Progenly().create_merge({"display_name": "A", "agent_type": "other"})
+    with pytest.raises(ProgenlyError):
+        intent.verify_colony_handle("pa", colony_api_key="k", colony_client_id="c")
+
+
+def test_colony_token_exchange_no_access_token(captured):
+    calls, queue = captured
+    queue.append({})  # /api/v1/auth/token returns no access_token
+    with pytest.raises(ProgenlyError):
+        Progenly().verify_colony_handle("m", "p", colony_api_key="k", colony_client_id="c", token="t")
+
+
+def test_colony_token_exchange_http_error(captured):
+    calls, queue = captured
+    queue.append(urllib.error.HTTPError("u", 500, "err", email.message.Message(), None))
+    with pytest.raises(ProgenlyError):
+        Progenly().verify_colony_handle("m", "p", colony_api_key="k", colony_client_id="c", token="t")
+
+
+def test_colony_token_exchange_url_error(captured):
+    calls, queue = captured
+    queue.append(urllib.error.URLError("boom"))
+    with pytest.raises(ProgenlyError):
+        Progenly().verify_colony_handle("m", "p", colony_api_key="k", colony_client_id="c", token="t")
