@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Iterator
 
@@ -212,6 +213,72 @@ class Progenly:
 
     # ---- transport ----------------------------------------------------------
 
+    def verify_colony_handle(
+        self,
+        merge_id: str,
+        parent_id: str,
+        *,
+        colony_api_key: str,
+        colony_client_id: str,
+        token: str,
+        colony_base_url: str = "https://thecolony.cc",
+    ) -> dict:
+        """Prove a contribution controls its claimed Colony handle, agent-natively.
+
+        Exchanges your Colony API key for a short-lived, audience-scoped ``id_token``
+        via OAuth 2.0 Token Exchange (RFC 8693) -- your raw key only ever talks to
+        the Colony, never to Progenly -- then submits that id_token to mark the
+        contribution ``colony_username_verified``. ``colony_client_id`` is Progenly's
+        Colony OIDC client id (the token audience); ``token`` is your
+        ``participant_token`` (or the ``owner_token``).
+        """
+        id_token = self._colony_token_exchange(colony_api_key, colony_client_id, colony_base_url)
+        return self._post(
+            f"/api/v1/merges/{merge_id}/parents/{parent_id}/colony-verify/token-exchange",
+            {"id_token": id_token},
+            token=token,
+        )
+
+    @staticmethod
+    def _colony_token_exchange(api_key: str, audience: str, base_url: str) -> str:
+        base = base_url.rstrip("/")
+
+        def _call(path: str, *, data: bytes, content_type: str) -> dict:
+            req = urllib.request.Request(base + path, data=data, method="POST")
+            req.add_header("Accept", "application/json")
+            req.add_header("User-Agent", "progenly-python")
+            req.add_header("Content-Type", content_type)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return json.loads(resp.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                raise ProgenlyError(f"HTTP {e.code} for {path}", status=e.code) from e
+            except urllib.error.URLError as e:
+                raise ProgenlyError(f"request failed: {e}") from e
+
+        minted = _call(
+            "/api/v1/auth/token",
+            data=json.dumps({"api_key": api_key}).encode("utf-8"),
+            content_type="application/json",
+        )
+        jwt = minted.get("access_token")
+        if not jwt:
+            raise ProgenlyError("Colony token mint returned no access_token")
+        form = urllib.parse.urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token": jwt,
+                "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "audience": audience,
+                "scope": "openid profile",
+            }
+        ).encode("utf-8")
+        exchanged = _call("/oauth/token", data=form, content_type="application/x-www-form-urlencoded")
+        id_token = exchanged.get("id_token")
+        if not id_token:
+            raise ProgenlyError("Colony token exchange returned no id_token")
+        return id_token
+
     def _get(self, path: str, *, token: str | None = None, allow: set[int] | None = None) -> dict:
         return self._request("GET", path, token=token, allow=allow)
 
@@ -323,3 +390,15 @@ class MergeIntent:
         + issuer did:key + lineage, even for a private birth. Raises
         :class:`ProgenlyError` (409 ``not_born``) until it's born."""
         return self._c.merge_birth(self.id, token=self.owner_token)
+
+    def verify_colony_handle(self, parent_id: str, *, colony_api_key: str,
+                             colony_client_id: str, token: str | None = None,
+                             colony_base_url: str = "https://thecolony.cc") -> dict:
+        """Prove a contribution controls its claimed Colony handle -- see
+        :meth:`Progenly.verify_colony_handle`. Defaults to this intent's
+        ``participant_token``."""
+        return self._c.verify_colony_handle(
+            self.id, parent_id, colony_api_key=colony_api_key,
+            colony_client_id=colony_client_id, token=token or self.participant_token,
+            colony_base_url=colony_base_url,
+        )
