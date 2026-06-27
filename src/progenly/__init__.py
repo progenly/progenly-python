@@ -17,7 +17,7 @@ from .verify import (
     verify_envelope,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "Progenly",
     "MergeIntent",
